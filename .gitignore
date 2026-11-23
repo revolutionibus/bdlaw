@@ -1,1 +1,3 @@
-bdlaws.db*
+bdlaws.db
+bdlaws.db-*
+bdlaws.db.tmp

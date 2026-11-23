@@ -5,8 +5,9 @@
   python3 bdlaw.py update --all    # re-download every act, replace the ones that changed
   python3 bdlaw.py search "words"  # search from the terminal
   python3 bdlaw.py serve           # search UI at http://127.0.0.1:8000
+  python3 bdlaw.py split           # after an update: rewrite bdlaws.db.gz.* parts for git
 """
-import argparse, hashlib, html, re, sqlite3, subprocess, sys, time, urllib.parse
+import argparse, gzip, hashlib, html, io, re, shutil, sqlite3, subprocess, sys, time, urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -61,7 +62,41 @@ def fetch_act(act_id):
     return title, text
 
 
+CHUNK = 45 * 1024 * 1024  # GitHub rejects files >100 MB and warns >50 MB
+
+
+def parts():
+    return sorted(DB.parent.glob(DB.name + ".gz.*"))
+
+
+def split_db():
+    """Compress bdlaws.db into bdlaws.db.gz.000, .001, ... small enough for GitHub."""
+    db = sqlite3.connect(DB)
+    db.execute("PRAGMA wal_checkpoint(TRUNCATE)")  # flush pending writes into the main file
+    db.close()
+    for p in parts():
+        p.unlink()
+    with open(DB, "rb") as src:
+        data = gzip.compress(src.read(), 9)
+    for n, i in enumerate(range(0, len(data), CHUNK)):
+        DB.with_name(f"{DB.name}.gz.{n:03}").write_bytes(data[i:i + CHUNK])
+    DB.touch()  # keep db newer than its own parts so the next start doesn't rebuild
+    print(f"wrote {len(parts())} parts")
+
+
+def join_db():
+    """Rebuild bdlaws.db from the parts (done automatically when missing or stale)."""
+    tmp = DB.with_name(DB.name + ".tmp")
+    with open(tmp, "wb") as out, gzip.GzipFile(fileobj=io.BytesIO(b"".join(p.read_bytes() for p in parts()))) as gz:
+        shutil.copyfileobj(gz, out)
+    tmp.replace(DB)  # only appears once fully written
+
+
 def connect():
+    ps = parts()  # rebuild if db missing or parts are newer (e.g. after git pull)
+    if ps and (not DB.exists() or max(p.stat().st_mtime for p in ps) > DB.stat().st_mtime):
+        print("building bdlaws.db from parts ...", file=sys.stderr)
+        join_db()
     db = sqlite3.connect(DB, timeout=60)
     db.execute("PRAGMA journal_mode=WAL")  # lets the web UI read while an update is writing
     db.executescript("""
@@ -306,9 +341,12 @@ def main():
     u = sub.add_parser("update"); u.add_argument("--all", action="store_true"); u.add_argument("--workers", type=int, default=4)
     s = sub.add_parser("search"); s.add_argument("query")
     v = sub.add_parser("serve"); v.add_argument("--port", type=int, default=8000)
+    sub.add_parser("split")
     a = p.parse_args()
     if a.cmd == "update":
         update(a.all, a.workers)
+    elif a.cmd == "split":
+        split_db()
     elif a.cmd == "search":
         for i, t, y, s in search(connect(), a.query):
             print(f"[{i}] {t} ({y})\n    {s.replace(chr(10), ' ')}\n")
