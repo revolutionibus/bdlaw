@@ -1,8 +1,10 @@
 # bdlaw
  This is a scrapped version of bdlaws
 ## How to RUN
-python3 bdlaw.py serve
 
+```bash
+python3 bdlaw.py serve
+```
 The database is stored as compressed parts (`bdlaws.db.gz.*`); `bdlaws.db` is rebuilt from them automatically on first run.
 After `python3 bdlaw.py update`, run `python3 bdlaw.py split` to refresh the parts before committing.
 
